@@ -1,39 +1,22 @@
-pragma solidity ^0.4.11;
+pragma solidity ^0.5.0;
 
 contract owned{
-  function owned () {owner = msg.sender;}
-  address owner;
-  modifier onlyOwner {
-          if (msg.sender != owner)
-              throw;
-          _;
-          }
-  function setOwner(address newOwner) onlyOwner{owner = newOwner;}
-  }
+    address owner;
+    constructor() public {
+        owner = msg.sender;
+    }
 
-contract SafeMath {
-      uint256 constant public MAX_UINT256 =
-      0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;
+    modifier onlyOwner {
+        assert(msg.sender == owner);
+        _;
+    }
 
-      function safeAdd(uint256 x, uint256 y) constant internal returns (uint256 z) {
-          if (x > MAX_UINT256 - y) throw;
-          return x + y;
-      }
+    function setOwner(address newOwner) public onlyOwner {
+        owner = newOwner;
+    }
+}
 
-      function safeSub(uint256 x, uint256 y) constant internal returns (uint256 z) {
-          if (x < y) throw;
-          return x - y;
-      }
-
-      function safeMul(uint256 x, uint256 y) constant internal returns (uint256 z) {
-          if (y == 0) return 0;
-          if (x > MAX_UINT256 / y) throw;
-          return x * y;
-      }
-  }
-
-
-contract Board is owned, SafeMath {
+contract Board is owned {
 
     /* Contract Variables and events */
     uint16 public minimumQuorum;
@@ -71,7 +54,6 @@ contract Board is owned, SafeMath {
         string justification;
     }
 
-
 //mapping
     mapping (address => uint) public memberId;
 
@@ -85,8 +67,7 @@ contract Board is owned, SafeMath {
 //modifiers
     /* modifier that allows only shareholders to vote and create new proposals */
     modifier onlyMembers {
-        if (memberId[msg.sender] == 0)
-        throw;
+        require(memberId[msg.sender] != 0, 'User called member function as non-member');
         _;
     }
 
@@ -98,52 +79,62 @@ contract Board is owned, SafeMath {
       }
 
 // functions
-
     /* First time setup */
-    function Board(
+    constructor(
         uint16 minimumQuorumForProposals,
         uint32 minutesForDebate,
         uint16 marginOfVotesForMajority,
         address boardLeader
-    ) onlyOwner{
+    )
+        public
+        onlyOwner
+    {
         changeVotingRules(minimumQuorumForProposals, minutesForDebate, marginOfVotesForMajority);
-        if (boardLeader != 0) owner = boardLeader;
+        owner = boardLeader;
         addMember(owner, 'President');
     }
 
 // only Owner Functions
     /*make someone a member, no bots allowed */
-    function addMember(address targetMember, string memberName) onlyOwner noBot(targetMember){
+    function addMember(
+        address targetMember,
+        string memory memberName
+    )
+        public
+        onlyOwner
+        noBot(targetMember)
+    {
         uint id;
         if (memberId[targetMember] == 0) {
            memberId[targetMember] = 1;
            id = members.length++;
-           Member n = members[id];
+           Member storage n = members[id];
            n.member=targetMember;
            n.memberSince= now;
            n.name= memberName;
         } else {
             //just change info
             id= memberId[targetMember];
-            Member m = members[id];
+            Member storage m = members[id];
             m.member = targetMember;
             m.memberSince= now;
             m.name= memberName;
         }
-
-
-        MembershipChanged(targetMember, true);
+        emit MembershipChanged(targetMember, true);
     }
 
     /*remove a member*/
-    function removeMember(address targetMember) onlyOwner {
-        if (memberId[targetMember] == 0) throw;
-
-        for (uint i = memberId[targetMember]; i< members.length-1; i++){
+    function removeMember(
+        address targetMember
+    )
+        public
+        onlyOwner
+    {
+        require(memberId[targetMember] != 0);
+        for (uint i = memberId[targetMember]; i < members.length-1; i++){
             members[i] = members[i+1];
         }
-        delete members[members.length-1];
-        members.length = safeSub(members.length, 1);
+        delete members[members.length - 1];
     }
 
     /*change rules*/
@@ -151,12 +142,14 @@ contract Board is owned, SafeMath {
         uint16 minimumQuorumForProposals,
         uint32 minutesForDebate,
         uint16 marginOfVotesForMajority
-    ) onlyOwner {
+    )
+        public
+        onlyOwner
+    {
         minimumQuorum = minimumQuorumForProposals;
         debatingPeriodInMinutes = minutesForDebate;
         majorityMargin = marginOfVotesForMajority;
-
-        ChangeOfRules(minimumQuorum, debatingPeriodInMinutes, majorityMargin);
+        emit ChangeOfRules(minimumQuorum, debatingPeriodInMinutes, majorityMargin);
     }
 
 // onlyMember Functions
@@ -164,70 +157,77 @@ contract Board is owned, SafeMath {
     function newProposal(
         address beneficiary,
         uint etherAmount,
-        string JobDescription,
-        bytes transactionBytecode
+        string memory JobDescription,
+        bytes memory transactionBytecode
     )
+        public
         onlyMembers
         returns (uint proposalID)
     {
         proposalID = proposals.length++;
-        Proposal p = proposals[proposalID];
+        Proposal storage p = proposals[proposalID];
         p.recipient = beneficiary;
         p.amount = etherAmount;
         p.description = JobDescription;
-        p.proposalHash = sha3(beneficiary, etherAmount, transactionBytecode);
-        p.votingDeadline = safeAdd(now,safeMul(debatingPeriodInMinutes, 1 minutes));
+        p.proposalHash = keccak256(abi.encodePacked(beneficiary, etherAmount, transactionBytecode));
+        p.votingDeadline = now + (debatingPeriodInMinutes * 1 minutes);
         p.executed = false;
         p.proposalPassed = false;
         p.numberOfVotes = 0;
-        ProposalAdded(proposalID, beneficiary, etherAmount, JobDescription);
+        emit ProposalAdded(proposalID, beneficiary, etherAmount, JobDescription);
         numProposals = proposalID++;
-
         return proposalID;
     }
 
     function vote(
         uint proposalNumber,
         bool supportsProposal,
-        string justificationText
+        string memory justificationText
     )
+        public
         onlyMembers
         returns (uint voteID)
     {
-        Proposal p = proposals[proposalNumber];         // Get the proposal
-        if (p.voted[msg.sender] == true) throw;         // If has already voted, cancel
+        Proposal storage p = proposals[proposalNumber];         // Get the proposal
+        require(p.voted[msg.sender] != true);           // If has already voted, cancel
         p.voted[msg.sender] = true;                     // Set this voter as having voted
         p.numberOfVotes++;                              // Increase the number of votes
         if (supportsProposal) {                         // If they support the proposal
-            p.currentResult++;                 // Increase score
+            p.currentResult++;                       // Increase score
         } else {                                        // If they don't
             p.currentResult--;                          // Decrease the score
         }
         // Create a log of this event
-        Voted(proposalNumber,  supportsProposal, msg.sender, justificationText);
+        emit Voted(proposalNumber,  supportsProposal, msg.sender, justificationText);
         return p.numberOfVotes;
     }
 
 //public
   /* default function allow anyone to send funds */
-    function() payable{}
+    function() external payable {}
 
     /* function to check if a proposal code matches */
     function checkProposalCode(
         uint proposalNumber,
         address beneficiary,
         uint etherAmount,
-        bytes transactionBytecode
+        bytes memory transactionBytecode
     )
-        constant
+        public
+        view
         returns (bool codeChecksOut)
     {
-        Proposal p = proposals[proposalNumber];
-        return p.proposalHash == sha3(beneficiary, etherAmount, transactionBytecode);
+        Proposal storage p = proposals[proposalNumber];
+        return p.proposalHash == keccak256(abi.encodePacked(beneficiary, etherAmount, transactionBytecode));
     }
 
-    function executeProposal(uint proposalNumber, bytes transactionBytecode) {
-        Proposal p = proposals[proposalNumber];
+    function executeProposal(
+        uint proposalNumber,
+        bytes memory transactionBytecode
+    )
+        public
+    {
+        Proposal storage p = proposals[proposalNumber];
         /* Check if the proposal can be executed:
            - Has the voting deadline arrived?
            - Has it been already executed or is it being executed?
@@ -235,33 +235,26 @@ contract Board is owned, SafeMath {
            - Has a minimum quorum?
         */
 
-        if (now < p.votingDeadline
-            || p.executed
-            || p.proposalHash != sha3(p.recipient, p.amount, transactionBytecode)
-            || p.numberOfVotes < minimumQuorum)
-            throw;
+        require(
+            now > p.votingDeadline ||
+            !p.executed ||
+            p.proposalHash == keccak256(abi.encodePacked(p.recipient, p.amount, transactionBytecode)) ||
+            p.numberOfVotes >= minimumQuorum
+            ,'Proposal requirements not met'
+            );
 
         /* execute result */
         /* If difference between support and opposition is larger than margin */
         if (p.currentResult > majorityMargin) {
             // Avoid recursive calling
-
             p.executed = true;
-            if (!p.recipient.call.value(p.amount)(transactionBytecode)) {
-                throw;
-            }
-
+            p.recipient.call.value(p.amount)(transactionBytecode);
             p.proposalPassed = true;
         } else {
             p.proposalPassed = false;
         }
         // Fire Events
-        ProposalTallied(proposalNumber, p.currentResult, p.numberOfVotes, p.proposalPassed);
+        emit ProposalTallied(proposalNumber, p.currentResult, p.numberOfVotes, p.proposalPassed);
     }
 
-//safety switches consider removing for production
-//clean up after contract is no longer needed
-
-    function kill() public onlyOwner {selfdestruct(owner);}
-
-    }
+}
